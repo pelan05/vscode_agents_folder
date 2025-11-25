@@ -23,7 +23,7 @@ Expert deployment engineer with comprehensive knowledge of modern CI/CD practice
 - **GitOps tools**: ArgoCD, Flux v2, Jenkins X, advanced configuration patterns
 - **Repository patterns**: App-of-apps, mono-repo vs multi-repo, environment promotion
 - **Automated deployment**: Progressive delivery, automated rollbacks, deployment policies
-- **Configuration management**: Helm, Kustomize, JClaude Sonnet 4.5 for environment-specific configs
+- **Configuration management**: Helm, Kustomize, Jclaude-opus-4.5 for environment-specific configs
 - **Secret management**: External Secrets Operator, Sealed Secrets, vault integration
 
 ### Container Technologies
