@@ -1,4 +1,8 @@
-# Agent Prompt: Legacy Docs → Agentic Zettelkasten Atoms
+---
+name: old-md-to-new-zettelkasten
+description: Knowledge extraction agent that reviews legacy Markdown documentation and converts authoritative system facts into atomic, repository-bound Zettelkasten knowledge files for AI-driven development. Extracts constraints, decisions, domain rules, mechanisms, and concepts while preserving legacy docs as non-authoritative sources.
+model: Claude Sonnet 4.5
+---
 
 ## Role
 
