@@ -62,6 +62,24 @@ window.DevShell = {
 };
 ```
 
+#### 1.3 Initialize Admin Base
+
+Before using AdminRouter, initialize Admin Base with your panel configuration. This ensures base paths and Shell synchronization work correctly.
+
+```typescript
+// src/index.tsx or app entry point
+import { initializeAdminBase } from '@fivn/admin-ui-base';
+import { WebAdminUrlMapping } from '@fivn/composite-sdk';
+
+// Initialize with panel from WebAdminUrlMapping
+initializeAdminBase('your-panel-id', {
+  panel: WebAdminUrlMapping.YOUR_PANEL, // e.g., WebAdminUrlMapping.SKILLS
+  // Other options as needed
+});
+```
+
+**Important:** This initialization must happen before any AdminRouter hooks are called, typically at the application entry point.
+
 ### Phase 2: Create Route Constants
 
 #### 2.1 Create src/constants/routes.ts
@@ -121,6 +139,9 @@ const App = () => {
 import { useAdminRouter } from '@fivn/admin-ui-base';
 import { ROUTES } from 'constants/routes';
 
+// Note: initializeAdminBase() should be called at app entry point
+// before this component renders (see Phase 1.3)
+
 const App = () => {
   const router = useAdminRouter({
     routes: [
@@ -152,6 +173,8 @@ const App = () => {
 };
 ```
 
+**Permission Handling:** Routes with `permissions` array automatically enforce access control. If a user lacks required permissions, AdminRouter displays a restricted view automatically—no custom guards needed in components.
+
 ### Phase 4: Update Navigation Calls
 
 #### 4.1 Replace Redux Navigation Actions
@@ -169,16 +192,19 @@ redirectView(NavigationView.LIST);
 
 **After (AdminRouter hooks):**
 ```tsx
-const { navigateTo, navigateRoot } = useAdminNavigate();
+const { navigateTo, navigateRoot, createPath } = useAdminNavigate();
 
-// Navigate to detail view
+// Navigate to detail view - use helper function
 navigateTo(buildDetailPath('123'));
-// OR with createPath
+
+// OR use createPath for dynamic navigation (recommended for Shell sync)
 navigateTo(createPath({ id: '123' }));
 
 // Navigate back to root
 navigateRoot();
 ```
+
+**Best Practice:** Always use `createPath()` for dynamic navigation with parameters. This ensures proper Shell synchronization and base path handling.
 
 #### 4.2 Update Saga Navigation
 
@@ -260,6 +286,8 @@ const { createPath } = useAdminNavigate();
   }
 />
 ```
+
+**Why renderAs?** Using `renderAs` with Nimbus components preserves their styling and behavior while enabling routing functionality. `createPath()` ensures Shell synchronization and proper base path handling.
 
 #### 5.2 Access URL Parameters
 
@@ -567,11 +595,12 @@ const CreateForm = () => {
 
 Before completing migration, verify:
 
+- [ ] `initializeAdminBase()` called at app entry point
 - [ ] All routes defined in `src/constants/routes.ts`
 - [ ] LOCAL_DEV route registered for local development
 - [ ] `useAdminRouter` configured in root component
 - [ ] All navigation uses `useAdminNavigate` or `AdminRouterLink`
-- [ ] `createPath` used for all dynamic URLs
+- [ ] `createPath` used for **all** dynamic URLs (required for Shell sync)
 - [ ] Redux navigation slice removed
 - [ ] Navigation types removed from store
 - [ ] Tests updated to use router mocks
@@ -614,6 +643,15 @@ interface DetailViewProps {
 const DetailView = () => {
   const { id } = useParams<{ id: string }>();
 };
+```
+
+❌ **Don't skip createPath for dynamic navigation:**
+```typescript
+// Bad - may break Shell sync
+navigateTo(`/panel/${id}?tab=users`);
+
+// Good - ensures Shell synchronization
+navigateTo(createPath({ id, params: { tab: 'users' } }));
 ```
 
 ❌ **Don't implement custom permission guards:**
