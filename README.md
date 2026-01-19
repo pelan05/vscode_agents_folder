@@ -62,6 +62,14 @@ skills:
   - python-async-patterns
 ```
 
+### Copying over to repo .github folder
+Copy the contents of this repository to your local .github folder using the command below:
+
+```bash
+curl -L https://github.com/pelan05/vscode_agents_folder/archive/refs/heads/main.tar.gz | tar -xz --strip-components=1 && \
+rm -f .gitignore README.md
+```
+
 ## Maintenance
 
 This repository is updated using the `sync-agents.sh` script in the parent repository. The script:
