@@ -66,10 +66,8 @@ skills:
 Copy the contents of this repository to your local .github folder using the command below:
 
 ```bash
-git clone --depth 1 https://github.com/OWNER/REPO.git path/to/destination && \
-rm -rf path/to/destination/.git && \
-rm -f  path/to/destination/.gitignore \
-       path/to/destination/README.md
+curl -L https://github.com/pelan05/vscode_agents_folder/archive/refs/heads/main.tar.gz | tar -xz --strip-components=1 && \
+rm -f .gitignore README.md
 ```
 
 ## Maintenance
