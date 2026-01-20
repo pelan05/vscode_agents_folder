@@ -22,6 +22,41 @@ Use this skill when:
 4. **Base paths are dynamic** - Never hard-code panel base paths
 5. **Permissions at route level** - No custom permission guards in components
 
+## Parameter Handling (Critical Pattern)
+
+**Always use `adminBase.navigation` for URL state—not react-router hooks directly.**
+
+```typescript
+import { useAdminBase } from '@fivn/admin-ui-base';
+import { useParams } from 'react-router';
+
+const MyComponent: FC<{ userIdProp?: string; userNameProp?: string }> = (props) => {
+  const { navigation } = useAdminBase();
+  const { id } = useParams<{ id: string }>(); // Path params from route definition
+  
+  // Derive state from pathname segments if needed
+  const pathname = navigation?.pathname || '';
+  const pathSegments = pathname.split('/').filter(Boolean);
+  
+  // Query params: always use useMemo + URLSearchParams
+  const searchParams = useMemo(
+    () => new URLSearchParams(navigation?.search || ''),
+    [navigation?.search]
+  );
+  
+  // Support both props and URL params (props take precedence)
+  const userId = props.userIdProp || searchParams.get('userId') || '';
+  const userName = props.userNameProp || searchParams.get('userName') || '';
+  const tab = searchParams.get('tab') || 'general';
+};
+```
+
+**Key rules:**
+- Path params (`:id`): Use `useParams()` from react-router
+- Query params (`?tab=x`): Use `navigation.search` from `useAdminBase()`
+- Pathname analysis: Use `navigation.pathname` from `useAdminBase()`
+- Always wrap `URLSearchParams` in `useMemo` with `navigation?.search` dependency
+
 ## Migration Workflow
 
 ### Phase 1: Setup & Dependencies
@@ -291,34 +326,23 @@ const { createPath } = useAdminNavigate();
 
 #### 5.2 Access URL Parameters
 
-**Before (Props from navigation state):**
-```tsx
-interface DetailViewProps {
-  itemId: string;
-  tab?: string;
-}
+Replace props-based navigation state with URL parameters. See [Parameter Handling](#parameter-handling-critical-pattern) for the complete pattern.
 
-const DetailView: FC<DetailViewProps> = ({ itemId, tab }) => {
-  // Component logic
-};
+**Before:**
+```tsx
+const DetailView: FC<{ itemId: string; tab?: string }> = ({ itemId, tab }) => {};
 ```
 
-**After (URL params and query):**
+**After:**
 ```tsx
-import { useParams } from 'react-router';
-import { useAdminBase } from '@fivn/admin-ui-base';
-
 const DetailView: FC = () => {
-  const { id } = useParams<{ id: string }>();
+  const { id } = useParams<{ id: string }>(); // Path param
   const { navigation } = useAdminBase();
-  
   const searchParams = useMemo(
     () => new URLSearchParams(navigation?.search || ''),
     [navigation?.search]
   );
-  const tab = searchParams.get('tab') || 'general';
-  
-  // Component logic using id and tab
+  const tab = searchParams.get('tab') || 'general'; // Query param
 };
 ```
 
@@ -500,19 +524,13 @@ it('renders detail view with correct params', () => {
 
 ## Common Patterns & Solutions
 
-### Pattern 1: Nested Routes with Tabs
+### Pattern 1: Tabs with URL State
 
 ```typescript
-// routes.ts
-export const ROUTES = {
-  DETAIL_VIEW: '/panel/:id',
-} as const;
-
-// Component
 const DetailView = () => {
   const { id } = useParams<{ id: string }>();
   const { navigation } = useAdminBase();
-  const { navigateTo } = useAdminNavigate();
+  const { navigateTo, createPath } = useAdminNavigate();
   
   const searchParams = useMemo(
     () => new URLSearchParams(navigation?.search || ''),
@@ -521,8 +539,7 @@ const DetailView = () => {
   const currentTab = searchParams.get('tab') || 'general';
   
   const handleTabChange = (tab: string) => {
-    const params = new URLSearchParams({ tab });
-    navigateTo(`/panel/${id}?${params.toString()}`);
+    navigateTo(createPath({ id, params: { tab } }));
   };
   
   return (
@@ -534,42 +551,31 @@ const DetailView = () => {
 };
 ```
 
-### Pattern 2: Conditional Navigation (Back with History)
+### Pattern 2: Conditional Back Navigation
 
 ```typescript
 const DetailView = () => {
   const { navigateBack, navigateRoot } = useAdminNavigate();
   const { navigation } = useAdminBase();
   
-  // Check if there's a referring page in search params
   const searchParams = useMemo(
     () => new URLSearchParams(navigation?.search || ''),
     [navigation?.search]
   );
   const fromPage = searchParams.get('from');
   
-  const handleBack = () => {
-    if (fromPage) {
-      navigateBack();
-    } else {
-      navigateRoot();
-    }
-  };
+  const handleBack = () => fromPage ? navigateBack() : navigateRoot();
   
   return <Button onClick={handleBack}>Back</Button>;
 };
 ```
 
-### Pattern 3: Multi-Step Form with URL State
+### Pattern 3: Multi-Step Form
 
 ```typescript
-const ROUTES = {
-  CREATE_FORM: '/panel/create',
-} as const;
-
 const CreateForm = () => {
   const { navigation } = useAdminBase();
-  const { navigateTo } = useAdminNavigate();
+  const { navigateTo, createPath } = useAdminNavigate();
   
   const searchParams = useMemo(
     () => new URLSearchParams(navigation?.search || ''),
@@ -577,9 +583,7 @@ const CreateForm = () => {
   );
   const step = parseInt(searchParams.get('step') || '1', 10);
   
-  const goToStep = (newStep: number) => {
-    navigateTo(`/panel/create?step=${newStep}`);
-  };
+  const goToStep = (newStep: number) => navigateTo(createPath({ params: { step: newStep } }));
   
   return (
     <Stepper currentStep={step}>
@@ -703,6 +707,7 @@ A successful migration will:
 - Mock `useAdminBase` to provide navigation state
 
 **Components not receiving URL params:**
-- Use `useParams()` for path parameters
-- Use `useAdminBase().navigation.search` for query params
-- Parse search params with `URLSearchParams`
+- Path params (`:id`): Use `useParams()` from react-router
+- Query params: Use `useAdminBase().navigation.search`, NOT `useLocation()`
+- Always wrap `URLSearchParams` in `useMemo` with `navigation?.search` dependency
+- For pathname analysis, use `navigation.pathname.split('/').filter(Boolean)`
