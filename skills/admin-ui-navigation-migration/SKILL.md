@@ -7,12 +7,21 @@ description: Migrate admin UI panels from internal navigation state to URL-based
 
 ## When to Use This Skill
 
-Use this skill when:
 - Migrating a panel from redux-based navigation to URL-based routing
 - Implementing AdminRouter in a new or existing admin panel
 - Fixing navigation issues related to Shell synchronization
 - Adding URL parameter support to panel navigation
-- Converting imperative navigation (redux actions) to declarative routing
+
+## Critical Migration Principle
+
+**Preserve all existing navigation logic during migration.** Only the implementation changes—not the functionality. When migrating:
+
+- Keep all existing routes and their purposes
+- Preserve query parameters and their behavior
+- Maintain the same navigation flows (list to detail to edit, etc.)
+- Retain all conditional navigation logic
+
+The old redux navigation code gets removed, but navigation behavior must remain identical.
 
 ## Core Principles
 
@@ -21,37 +30,178 @@ Use this skill when:
 3. **Navigation stays synchronized with Shell** - Use AdminRouter APIs exclusively
 4. **Base paths are dynamic** - Never hard-code panel base paths
 5. **Permissions at route level** - No custom permission guards in components
+6. **Prefer declarative over imperative** - Must use `AdminRouterLink` unless impossible
+7. **Follow flat route naming** - Use `/<panel>/<action>/<id>` pattern
 
-## Parameter Handling (Critical Pattern)
+## Route Naming Patterns
 
-**Always use `adminBase.navigation` for URL state—not react-router hooks directly.**
+**Flat navigation is preferred.** Use this pattern:
+
+```
+/<unique-panel-endpoint>/<action>
+/<unique-panel-endpoint>/<action>/<id>
+```
+
+The `<unique-panel-endpoint>` must be WebAdminUrlMapping.YOUR_PANEL. Panels with common names (skills, users) may need more specific endpoints.
+
+**Standard routes:**
+
+```
+/WebAdminUrlMapping.YOUR_PANEL                     # List view (root)
+/WebAdminUrlMapping.YOUR_PANEL/create              # Create view
+/WebAdminUrlMapping.YOUR_PANEL/edit/{id}           # Edit view
+/WebAdminUrlMapping.YOUR_PANEL/edit/{id}?tab={tab} # Edit view with tab state
+/WebAdminUrlMapping.YOUR_PANEL/view/{id}           # Detail/read-only view (if separate from edit)
+```
+
+**Nested sub-navigation example (internal panel navigation only, if tabs have internal routes we switch from query param above to sub-navigation below):**
+
+```
+/users/edit/{id}/skills
+/users/edit/{id}/skills/assign
+/users/edit/{id}/skills/assign/{skillId}
+```
+
+**Important:** If a proposed route structure doesn't follow this pattern (e.g., `/:id/edit` instead of `/edit/:id`), refactor it to comply before implementation.
+
+## Architecture Overview
+
+The Admin Shell is the source of truth for URL routing. Navigation flows through CompositeSDK:
+
+1. Panel requests navigation via `AdminRouterLink` or `navigateTo()`
+2. Request sent to Shell via CompositeSDK postMessage
+3. Shell validates, updates browser URL, and sends route back to panel
+4. Panel's internal MemoryRouter updates to match
+
+This architecture ensures Shell and panel stay synchronized, enabling browser back/forward, bookmarking, and deep linking.
+
+## Declarative vs Imperative Navigation
+
+**Always prefer declarative navigation (AdminRouterLink) over imperative (navigateTo).** Declarative routing:
+
+- Complies with accessibility (a11y) standards
+- Renders proper anchor elements for screen readers
+- Supports keyboard navigation and right-click context menus
+- Enables browser prefetching hints
+
+**Use imperative navigation only when declarative is impossible:**
+
+- Programmatic redirects after form submission
+- Navigation triggered by non-interactive events
+- Accessibility-required focus management scenarios
+- Navigation inside sagas or effects
+
+### Declarative Routing (Preferred)
+
+Use `AdminRouterLink` with Nimbus `renderAs` prop to maintain styling while enabling routing:
+
+```typescript
+import { AdminRouterLink, useAdminNavigate } from '@fivn/admin-ui-base';
+import { Button, ButtonVariantEnum } from '@fivn/ui-components';
+
+const MyComponent = () => {
+  const { createPath } = useAdminNavigate();
+
+  return (
+    <Button
+      variant={ButtonVariantEnum.link}
+      label="Go to Skill Details"
+      renderAs={<AdminRouterLink to={createPath({ id: '123456', params: { tab: 'general' } })} />}
+    />
+  );
+};
+```
+
+### Imperative Routing (When Declarative Is Impossible)
+
+Use `useAdminNavigate` for programmatic navigation in event handlers or effects:
+
+```typescript
+import { useAdminNavigate } from '@fivn/admin-ui-base';
+
+const MyComponent = () => {
+  const { navigateTo, navigateBack, navigateRoot, createPath } = useAdminNavigate();
+
+  const handleFormSubmit = async () => {
+    await saveData();
+    navigateTo(createPath({ id: '123456', params: { tab: 'users' } }));
+  };
+
+  const handleCreate = () => {
+    navigateTo(createPath({ action: 'create' }));
+  };
+
+  return (
+    <form onSubmit={handleFormSubmit}>
+      {/* Form content */}
+      <button type="submit">Save</button>
+      <button type="button" onClick={() => navigateBack()}>
+        Cancel
+      </button>
+      <button type="button" onClick={() => navigateRoot()}>
+        Back to List
+      </button>
+    </form>
+  );
+};
+```
+
+**Always use `createPath()` when constructing paths.** This helper ensures the panel's base path is correctly prepended, maintaining synchronization with the Shell.
+
+### Path Helper Functions
+
+`createPath` generates paths using `action || id`, producing either `/panel/create` OR `/panel/{id}`. For routes following the `/<action>/<id>` pattern (like `/edit/{id}`), create helper functions:
+
+```typescript
+// src/constants/routes.ts
+const BASE = WebAdminUrlMapping.YOUR_PANEL;
+
+export const ROUTES = {
+  ROOT: `/${BASE}`,
+  CREATE_VIEW: `/${BASE}/create`,
+  EDIT_VIEW: `/${BASE}/edit/:id`,
+  VIEW: `/${BASE}/view/:id`,
+} as const;
+
+// Path builders for dynamic routes
+export const buildEditPath = (id: string): string => `/${BASE}/edit/${id}`;
+export const buildViewPath = (id: string): string => `/${BASE}/view/${id}`;
+```
+
+**Usage:**
+
+```tsx
+import { buildEditPath } from 'constants/routes';
+
+// Declarative - preferred (mandatory for compliance)
+<Button label="Edit" renderAs={<AdminRouterLink to={buildEditPath(row.id)} />} />;
+
+// Imperative - when declarative is absolutely impossible
+navigateTo(buildEditPath(id));
+```
+
+## Parameter Handling
+
+**Use `useAdminBase().navigation` for URL state, not react-router hooks directly.**
 
 ```typescript
 import { useAdminBase } from '@fivn/admin-ui-base';
 import { useParams } from 'react-router';
 
-const MyComponent: FC<{ userIdProp?: string; userNameProp?: string }> = (props) => {
+const MyComponent: FC = () => {
   const { navigation } = useAdminBase();
   const { id } = useParams<{ id: string }>(); // Path params from route definition
-  
-  // Derive state from pathname segments if needed
-  const pathname = navigation?.pathname || '';
-  const pathSegments = pathname.split('/').filter(Boolean);
-  
-  // Query params: always use useMemo + URLSearchParams
-  const searchParams = useMemo(
-    () => new URLSearchParams(navigation?.search || ''),
-    [navigation?.search]
-  );
-  
-  // Support both props and URL params (props take precedence)
-  const userId = props.userIdProp || searchParams.get('userId') || '';
-  const userName = props.userNameProp || searchParams.get('userName') || '';
+
+  // Query params: always memoize URLSearchParams
+  const searchParams = useMemo(() => new URLSearchParams(navigation?.search || ''), [navigation?.search]);
+
   const tab = searchParams.get('tab') || 'general';
+  const pathname = navigation?.pathname || '';
 };
 ```
 
-**Key rules:**
+**Rules:**
+
 - Path params (`:id`): Use `useParams()` from react-router
 - Query params (`?tab=x`): Use `navigation.search` from `useAdminBase()`
 - Pathname analysis: Use `navigation.pathname` from `useAdminBase()`
@@ -63,7 +213,7 @@ const MyComponent: FC<{ userIdProp?: string; userNameProp?: string }> = (props) 
 
 #### 1.1 Verify Package Versions
 
-Ensure minimum versions in `package.json`:
+Minimum required versions in `package.json`:
 
 ```json
 {
@@ -86,120 +236,85 @@ Ensure minimum versions in `package.json`:
 
 #### 1.2 Update config.dev.js
 
-Define admin routes for local development:
+Define admin routes for local development following the `/<panel>/<action>/<id>` pattern:
 
 ```javascript
 window.DevShell = {
   name: 'your-panel-name',
   permissions: ['resource.view', 'resource.edit'],
   features: ['admin-console.your-feature.temp'],
-  adminRoutes: ['/your-panel', '/your-panel/:id', '/your-panel/:id/:subpage'],
+  adminRoutes: ['/your-panel', '/your-panel/create', '/your-panel/edit/:id', '/your-panel/view/:id'],
 };
 ```
 
 #### 1.3 Initialize Admin Base
 
-Before using AdminRouter, initialize Admin Base with your panel configuration. This ensures base paths and Shell synchronization work correctly.
+Call at app entry point before any AdminRouter hooks:
 
 ```typescript
-// src/index.tsx or app entry point
-import { initializeAdminBase } from '@fivn/admin-ui-base';
-import { WebAdminUrlMapping } from '@fivn/composite-sdk';
+// src/index.tsx
+import { initializeAdminBase, WebAdminUrlMapping } from '@fivn/admin-ui-base';
 
-// Initialize with panel from WebAdminUrlMapping
 initializeAdminBase('your-panel-id', {
-  panel: WebAdminUrlMapping.YOUR_PANEL, // e.g., WebAdminUrlMapping.SKILLS
-  // Other options as needed
+  panel: WebAdminUrlMapping.YOUR_PANEL,
 });
 ```
 
-**Important:** This initialization must happen before any AdminRouter hooks are called, typically at the application entry point.
-
 ### Phase 2: Create Route Constants
 
-#### 2.1 Create src/constants/routes.ts
-
-**Critical Structure Requirements:**
-- Must include `LOCAL_DEV: '/'` for local development
-- Panel routes must start with shell path (e.g., `/your-panel`)
-- Base route should duplicate shell path for root view
+Create `src/constants/routes.ts` following the `/<panel>/<action>/<id>` pattern:
 
 ```typescript
-// src/constants/routes.ts
+import { WebAdminUrlMapping } from '@fivn/composite-sdk';
+
+const BASE = WebAdminUrlMapping.YOUR_PANEL;
+
 export const ROUTES = {
   LOCAL_DEV: '/', // Required for local development
-  ROOT: '/your-panel', // Shell path + base route
-  DETAIL_VIEW: '/your-panel/:id',
-  EDIT_VIEW: '/your-panel/:id/edit',
+  ROOT: `/${BASE}`, // List view
+  CREATE_VIEW: `/${BASE}/create`,
+  EDIT_VIEW: `/${BASE}/edit/:id`,
+  VIEW: `/${BASE}/view/:id`, // Detail/read-only view
 } as const;
 
-// Helper functions for path building (optional but recommended)
-export const buildDetailPath = (id: string): string => {
-  return `/your-panel/${id}`;
-};
-
-export const buildEditPath = (id: string): string => {
-  return `/your-panel/${id}/edit`;
-};
+// Path builders for routes with dynamic segments
+export const buildEditPath = (id: string): string => `/${BASE}/edit/${id}`;
+export const buildViewPath = (id: string): string => `/${BASE}/view/${id}`;
 ```
 
 ### Phase 3: Implement Router Configuration
 
-#### 3.1 Update Root Component
-
 Replace navigation controller with `useAdminRouter`:
 
-**Before (Redux-based navigation):**
+**Before (Redux-based):**
+
 ```tsx
-// app/index.tsx
 const App = () => {
   const { currentView, currentViewProps } = useNavigation();
 
-  const renderView = () => {
-    switch (currentView) {
-      case NavigationView.LIST:
-        return <ListView />;
-      case NavigationView.DETAIL:
-        return <DetailView {...currentViewProps} />;
-    }
-  };
-
-  return <Stack fullHeight>{renderView()}</Stack>;
+  switch (currentView) {
+    case NavigationView.LIST:
+      return <ListView />;
+    case NavigationView.DETAIL:
+      return <DetailView {...currentViewProps} />;
+  }
 };
 ```
 
 **After (AdminRouter):**
+
 ```tsx
-// app/index.tsx or src/index.tsx
 import { useAdminRouter } from '@fivn/admin-ui-base';
 import { ROUTES } from 'constants/routes';
-
-// Note: initializeAdminBase() should be called at app entry point
-// before this component renders (see Phase 1.3)
 
 const App = () => {
   const router = useAdminRouter({
     routes: [
-      {
-        path: ROUTES.LOCAL_DEV,
-        element: <ListView />,
-        permissions: ['resource.view'],
-      },
-      {
-        path: ROUTES.ROOT,
-        element: <ListView />,
-        permissions: ['resource.view'],
-      },
-      {
-        path: ROUTES.DETAIL_VIEW,
-        element: <DetailView />,
-        permissions: ['resource.view'],
-      },
-      {
-        path: ROUTES.EDIT_VIEW,
-        element: <EditView />,
-        permissions: ['resource.view', 'resource.edit'],
-      },
+      { path: ROUTES.LOCAL_DEV, element: <ListView />, permissions: ['resource.view'] },
+      { path: ROUTES.ROOT, element: <ListView />, permissions: ['resource.view'] },
+      { path: ROUTES.CREATE_VIEW, element: <CreateView />, permissions: ['resource.edit'] },
+      { path: ROUTES.VIEW, element: <DetailView />, permissions: ['resource.view'] },
+      { path: ROUTES.EDIT_VIEW, element: <EditView />, permissions: ['resource.view', 'resource.edit'] },
     ],
     notFound: <NotFoundView />,
   });
@@ -208,212 +323,150 @@ const App = () => {
 };
 ```
 
-**Permission Handling:** Routes with `permissions` array automatically enforce access control. If a user lacks required permissions, AdminRouter displays a restricted view automatically—no custom guards needed in components.
+**Route order matters:** Place more specific routes (like `/create`) before parameterized routes (like `/edit/:id`) to ensure correct matching.
 
-### Phase 4: Update Navigation Calls
+Routes with `permissions` array automatically enforce access control. Missing permissions display a restricted view.
 
-#### 4.1 Replace Redux Navigation Actions
+### Phase 4: Migrate Navigation Logic
 
-**Before (Redux action dispatch):**
+**Critical: Preserve all existing navigation behavior.** While removing redux navigation code, ensure all navigation paths, query params, and user flows are maintained in the new implementation.
+
+#### 4.1 Map Existing Navigation to Routes
+
+Document current navigation flows before migrating:
+
+| Old Navigation                        | New Route            | Example Path                  |
+| ------------------------------------- | -------------------- | ----------------------------- |
+| `NavigationView.LIST`                 | `ROUTES.ROOT`        | `/users`                      |
+| `NavigationView.CREATE`               | `ROUTES.CREATE_VIEW` | `/users/create`               |
+| `NavigationView.DETAIL` with `{ id }` | `ROUTES.VIEW`        | `/users/view/123`             |
+| `NavigationView.EDIT` with `{ id }`   | `ROUTES.EDIT_VIEW`   | `/users/edit/123?tab=general` |
+
+#### 4.2 Replace Redux Navigation Actions
+
+**Before:**
+
 ```tsx
 const { redirectView } = useNavigation();
-
-// Navigate to detail view
-redirectView(NavigationView.DETAIL, { id: '123' });
-
-// Navigate back
-redirectView(NavigationView.LIST);
+redirectView(NavigationView.DETAIL, { id: '123', tab: 'users' });
 ```
 
-**After (AdminRouter hooks):**
+**After:**
+
 ```tsx
-const { navigateTo, navigateRoot, createPath } = useAdminNavigate();
-
-// Navigate to detail view - use helper function
-navigateTo(buildDetailPath('123'));
-
-// OR use createPath for dynamic navigation (recommended for Shell sync)
-navigateTo(createPath({ id: '123' }));
-
-// Navigate back to root
-navigateRoot();
+const { navigateTo, createPath } = useAdminNavigate();
+navigateTo(createPath({ id: '123', params: { tab: 'users' } }));
 ```
 
-**Best Practice:** Always use `createPath()` for dynamic navigation with parameters. This ensures proper Shell synchronization and base path handling.
+#### 4.3 Update Saga Navigation
 
-#### 4.2 Update Saga Navigation
+For existing redux-saga panels, import functions directly from admin-ui-base:
 
-**Before (Redux saga):**
 ```typescript
-// sagas/items.ts
-yield put(navigationActions.updateCurrentView({
-  currentView: NavigationView.DETAIL,
-  currentViewProps: { id: itemId }
-}));
+import { navigateTo, navigateRoot } from '@fivn/admin-ui-base';
+import { buildEditPath } from 'constants/routes';
+
+export function* handleSaveItem({ payload }: PayloadAction<SaveRequest>) {
+  try {
+    const result = yield call(api.save, payload);
+    yield call(navigateTo, buildEditPath(result.id));
+  } catch (error) {
+    yield call(navigateRoot);
+  }
+}
 ```
 
-**After (Navigation service):**
+For new panels, prefer React hooks with a navigation service:
+
 ```typescript
 // services/navigation.ts
+import { buildViewPath, buildEditPath } from 'constants/routes';
+
 type NavigateToFunction = (to: string) => void;
 let navigateFunction: NavigateToFunction | null = null;
 
-export const setNavigateFunction = (navigate: NavigateToFunction): void => {
-  navigateFunction = navigate;
+export const setNavigateFunction = (fn: NavigateToFunction): void => {
+  navigateFunction = fn;
 };
 
-export const navigateToDetail = (id: string): void => {
-  if (navigateFunction) {
-    navigateFunction(buildDetailPath(id));
-  }
+export const navigateToView = (id: string): void => {
+  navigateFunction?.(buildViewPath(id));
 };
 
-// Initialize in root component
-const NavigationInitializer = ({ children }) => {
-  const { navigateTo } = useAdminNavigate();
-  
-  useEffect(() => {
-    setNavigateFunction(navigateTo);
-  }, [navigateTo]);
-  
-  return <>{children}</>;
+export const navigateToEdit = (id: string): void => {
+  navigateFunction?.(buildEditPath(id));
 };
 
-// In saga
-import { navigateToDetail } from 'services/navigation';
-
-yield call(navigateToDetail, itemId);
+// In root component
+const { navigateTo } = useAdminNavigate();
+useEffect(() => setNavigateFunction(navigateTo), [navigateTo]);
 ```
 
 ### Phase 5: Update Component Navigation
 
-#### 5.1 Convert Links to AdminRouterLink
-
-**Before (Button with onClick):**
-```tsx
-const handleClick = () => {
-  redirectView(NavigationView.DETAIL, { id: row.id });
-};
-
-<Button
-  variant={ButtonVariantEnum.link}
-  label={row.name}
-  onClick={handleClick}
-/>
-```
-
-**After (AdminRouterLink with renderAs):**
-```tsx
-import { AdminRouterLink, useAdminNavigate } from '@fivn/admin-ui-base';
-
-const { createPath } = useAdminNavigate();
-
-<Button
-  variant={ButtonVariantEnum.link}
-  label={row.name}
-  renderAs={
-    <AdminRouterLink
-      to={createPath({
-        id: row.id,
-        params: { tab: 'general' }
-      })}
-    />
-  }
-/>
-```
-
-**Why renderAs?** Using `renderAs` with Nimbus components preserves their styling and behavior while enabling routing functionality. `createPath()` ensures Shell synchronization and proper base path handling.
-
-#### 5.2 Access URL Parameters
-
-Replace props-based navigation state with URL parameters. See [Parameter Handling](#parameter-handling-critical-pattern) for the complete pattern.
+#### 5.1 Convert to AdminRouterLink (Preferred)
 
 **Before:**
+
+```tsx
+<Button
+  variant={ButtonVariantEnum.link}
+  label={row.name}
+  onClick={() => redirectView(NavigationView.DETAIL, { id: row.id })}
+/>
+```
+
+**After:**
+
+```tsx
+<Button
+  variant={ButtonVariantEnum.link}
+  label={row.name}
+  renderAs={<AdminRouterLink to={createPath({ id: row.id, params: { tab: 'general' } })} />}
+/>
+```
+
+#### 5.2 Replace Props with URL Parameters
+
+**Before:**
+
 ```tsx
 const DetailView: FC<{ itemId: string; tab?: string }> = ({ itemId, tab }) => {};
 ```
 
 **After:**
+
 ```tsx
 const DetailView: FC = () => {
-  const { id } = useParams<{ id: string }>(); // Path param
+  const { id } = useParams<{ id: string }>();
   const { navigation } = useAdminBase();
-  const searchParams = useMemo(
-    () => new URLSearchParams(navigation?.search || ''),
-    [navigation?.search]
-  );
-  const tab = searchParams.get('tab') || 'general'; // Query param
+  const searchParams = useMemo(() => new URLSearchParams(navigation?.search || ''), [navigation?.search]);
+  const tab = searchParams.get('tab') || 'general';
 };
 ```
 
 ### Phase 6: Remove Redux Navigation Code
 
-#### 6.1 Delete Navigation Slice
+Delete these files:
 
-Remove files:
-- `src/redux/slices/navigation.ts`
-- `src/redux/slices/__tests__/navigation.test.ts`
-- `src/redux/hooks/useNavigation.ts`
-- `src/redux/hooks/__tests__/useNavigation.test.ts`
+- `src/redux/slices/navigation.ts` and tests
+- `src/redux/hooks/useNavigation.ts` and tests
 - `src/types/redux/navigation.ts`
-- `src/types/model/navigation.ts` (if exists)
+- `src/types/model/navigation.ts`
 
-#### 6.2 Update Root Reducer
-
-**Before:**
-```typescript
-// redux/rootReducer.ts
-import navigationSlice from 'redux/slices/navigation';
-
-const slices = [
-  formsSlice,
-  navigationSlice, // Remove this
-  dataSlice
-];
-```
-
-**After:**
-```typescript
-// redux/rootReducer.ts
-const slices = [
-  formsSlice,
-  dataSlice
-];
-```
-
-#### 6.3 Clean Up Store Types
-
-**Before:**
-```typescript
-// types/redux/store.ts
-export type RootState = {
-  forms: FormsState;
-  navigation: NavigationState; // Remove this
-  data: DataState;
-};
-```
-
-**After:**
-```typescript
-// types/redux/store.ts
-export type RootState = {
-  forms: FormsState;
-  data: DataState;
-};
-```
+Update `rootReducer.ts` and store types to remove navigation state.
 
 ### Phase 7: Update Tests
 
-#### 7.1 Setup Test Mocks
+#### 7.1 Global Test Mocks
 
-Create global mocks in `src/setupTests.ts`:
+Add to `src/setupTests.ts`:
 
 ```typescript
-// setupTests.ts
 jest.mock('@fivn/admin-ui-base', () => {
   const React = require('react');
   const actual = jest.requireActual('@fivn/admin-ui-base');
-  
+
   return {
     ...actual,
     useAdminBase: jest.fn(() => ({
@@ -421,127 +474,94 @@ jest.mock('@fivn/admin-ui-base', () => {
       features: [],
       uiPermissions: [],
       userId: 'test-user-id',
-      navigation: {
-        search: '',
-        pathname: '/',
-      },
+      navigation: { search: '', pathname: '/' },
     })),
     useAdminNavigate: jest.fn(() => ({
       navigateTo: jest.fn(),
       navigateBack: jest.fn(),
       navigateRoot: jest.fn(),
-      createPath: jest.fn((options: any) => {
-        const base = options?.base || '/';
-        const params = options?.params || {};
+      createPath: jest.fn((opts: any) => {
+        const params = opts?.params || {};
         const queryString = new URLSearchParams(params).toString();
+        const base = opts?.id ? `/panel/${opts.id}` : '/panel';
         return queryString ? `${base}?${queryString}` : base;
       }),
     })),
     useAdminRouter: jest.fn().mockImplementation((config: any) => {
       const mockFn = jest.requireMock('@fivn/admin-ui-base').useAdminBase;
-      const latestCall = mockFn.mock.results[mockFn.mock.results.length - 1];
-      const navigation = latestCall?.value?.navigation || {};
+      const navigation = mockFn.mock.results.slice(-1)[0]?.value?.navigation || {};
       const pathname = navigation.pathname || '/';
-      
-      const matchedRoute = config.routes?.find((route: any) => route.path === pathname);
-      return matchedRoute?.element || config.routes?.[0]?.element || null;
+      const matched = config.routes?.find((r: any) => r.path === pathname);
+      return matched?.element || config.routes?.[0]?.element || null;
     }),
     AdminRouterLink: React.forwardRef(({ to, children, ...props }: any, ref: any) =>
-      React.createElement('a', { href: to, ref, ...props }, children)
+      React.createElement('a', { href: to, ref, ...props }, children),
     ),
   };
 });
 ```
 
-#### 7.2 Update Component Tests
+#### 7.2 Test Navigation Links
 
-**Before (Testing with navigation mock):**
 ```typescript
-import { mockUseNavigation } from 'utils/testing/mockUtils';
-
-it('navigates to detail view', () => {
-  const redirectViewMock = jest.fn();
-  mockUseNavigation({ redirectView: redirectViewMock });
-  
-  render(<ListView />);
-  fireEvent.click(screen.getByText('View Details'));
-  
-  expect(redirectViewMock).toHaveBeenCalledWith(
-    NavigationView.DETAIL,
-    { id: '123' }
-  );
-});
-```
-
-**After (Testing with router):**
-```typescript
-import { useAdminNavigate } from '@fivn/admin-ui-base';
-
-it('navigates to detail view', () => {
-  const navigateToMock = jest.fn();
-  jest.spyOn(require('@fivn/admin-ui-base'), 'useAdminNavigate')
-    .mockReturnValue({
-      navigateTo: navigateToMock,
-      navigateBack: jest.fn(),
-      navigateRoot: jest.fn(),
-      createPath: jest.fn((opts: any) => `/panel/${opts.id}`),
-    });
-  
+it('renders navigation link with correct href', () => {
   render(<ListView />);
   const link = screen.getByRole('link', { name: 'View Details' });
-  
   expect(link).toHaveAttribute('href', '/panel/123');
 });
 ```
 
-#### 7.3 Test Components with URL Params
+#### 7.3 Test with URL Params
 
 ```typescript
-import { MemoryRouter, Route, Routes } from 'react-router';
+it('renders with URL params', () => {
+  jest.spyOn(require('@fivn/admin-ui-base'), 'useAdminBase').mockReturnValue({
+    navigation: { search: '?tab=users', pathname: '/panel/123' },
+  });
 
-it('renders detail view with correct params', () => {
-  const mockNavigateTo = jest.fn();
-  
-  jest.spyOn(require('@fivn/admin-ui-base'), 'useAdminBase')
-    .mockReturnValue({
-      navigation: {
-        search: '?tab=users',
-        pathname: '/panel/123',
-      },
-    });
-  
   render(
     <MemoryRouter initialEntries={['/panel/123?tab=users']}>
       <Routes>
         <Route path="/panel/:id" element={<DetailView />} />
       </Routes>
-    </MemoryRouter>
+    </MemoryRouter>,
   );
-  
+
   expect(screen.getByText('Users Tab')).toBeInTheDocument();
 });
 ```
 
-## Common Patterns & Solutions
+## Cross-Panel Navigation
 
-### Pattern 1: Tabs with URL State
+To navigate to a different panel, pass the full path directly:
+
+```typescript
+const { navigateTo } = useAdminNavigate();
+
+// Navigate to a different panel
+navigateTo('/skill-sets/123');
+navigateTo('/users/agents');
+```
+
+The Shell detects the path belongs to a different panel, unmounts the current panel, and mounts the target panel.
+
+## Common Patterns
+
+### Tabs with URL State
 
 ```typescript
 const DetailView = () => {
   const { id } = useParams<{ id: string }>();
   const { navigation } = useAdminBase();
   const { navigateTo, createPath } = useAdminNavigate();
-  
-  const searchParams = useMemo(
-    () => new URLSearchParams(navigation?.search || ''),
-    [navigation?.search]
-  );
+
+  const searchParams = useMemo(() => new URLSearchParams(navigation?.search || ''), [navigation?.search]);
   const currentTab = searchParams.get('tab') || 'general';
-  
+
   const handleTabChange = (tab: string) => {
     navigateTo(createPath({ id, params: { tab } }));
   };
-  
+
   return (
     <Tabs value={currentTab} onChange={handleTabChange}>
       <Tab value="general">General</Tab>
@@ -551,130 +571,102 @@ const DetailView = () => {
 };
 ```
 
-### Pattern 2: Conditional Back Navigation
+### Back Navigation
 
 ```typescript
 const DetailView = () => {
   const { navigateBack, navigateRoot } = useAdminNavigate();
-  const { navigation } = useAdminBase();
-  
-  const searchParams = useMemo(
-    () => new URLSearchParams(navigation?.search || ''),
-    [navigation?.search]
-  );
-  const fromPage = searchParams.get('from');
-  
-  const handleBack = () => fromPage ? navigateBack() : navigateRoot();
-  
-  return <Button onClick={handleBack}>Back</Button>;
+
+  // navigateBack() pops local MemoryRouter history and syncs with Shell
+  // navigateRoot() goes to panel root (/)
+
+  return <Button onClick={() => navigateRoot()}>Back to List</Button>;
 };
 ```
 
-### Pattern 3: Multi-Step Form
+### Multi-Step Form
 
 ```typescript
 const CreateForm = () => {
   const { navigation } = useAdminBase();
   const { navigateTo, createPath } = useAdminNavigate();
-  
-  const searchParams = useMemo(
-    () => new URLSearchParams(navigation?.search || ''),
-    [navigation?.search]
-  );
+
+  const searchParams = useMemo(() => new URLSearchParams(navigation?.search || ''), [navigation?.search]);
   const step = parseInt(searchParams.get('step') || '1', 10);
-  
-  const goToStep = (newStep: number) => navigateTo(createPath({ params: { step: newStep } }));
-  
-  return (
-    <Stepper currentStep={step}>
-      <Step label="Details" />
-      <Step label="Configuration" />
-      <Step label="Review" />
-    </Stepper>
-  );
+
+  const goToStep = (newStep: number) => {
+    navigateTo(createPath({ action: 'create', params: { step: String(newStep) } }));
+  };
 };
+```
+
+## Anti-Patterns
+
+**Never use react-router directly:**
+
+```typescript
+// Wrong
+import { Link, useNavigate } from 'react-router-dom';
+
+// Correct
+import { AdminRouterLink, useAdminNavigate } from '@fivn/admin-ui-base';
+```
+
+**Never hard-code paths without createPath:**
+
+```typescript
+// Wrong - breaks Shell sync
+navigateTo(`/panel/${id}?tab=users`);
+
+// Correct
+navigateTo(createPath({ id, params: { tab: 'users' } }));
+```
+
+**Use path helpers for `/<action>/<id>` routes:**
+
+```typescript
+// createPath generates /panel/edit OR /panel/123, not both
+// For /edit/123 pattern, use helper functions
+buildEditPath('123'); // Returns /panel/edit/123
+buildViewPath('123'); // Returns /panel/view/123
+```
+
+**Never implement custom permission guards:**
+
+```typescript
+// Wrong
+if (!hasPermission('edit')) return <Restricted />;
+
+// Correct - use route-level permissions
+{ path: ROUTES.EDIT, element: <EditView />, permissions: ['edit'] }
+```
+
+**Never use onClick for navigation when a link is possible:**
+
+```typescript
+// Wrong - breaks a11y
+<Button onClick={() => navigateTo(path)}>View</Button>
+
+// Correct - accessible
+<Button renderAs={<AdminRouterLink to={path} />}>View</Button>
 ```
 
 ## Validation Checklist
 
-Before completing migration, verify:
-
+- [ ] Routes follow `/<panel>/<action>/<id>` naming pattern
 - [ ] `initializeAdminBase()` called at app entry point
 - [ ] All routes defined in `src/constants/routes.ts`
-- [ ] LOCAL_DEV route registered for local development
-- [ ] `useAdminRouter` configured in root component
-- [ ] All navigation uses `useAdminNavigate` or `AdminRouterLink`
-- [ ] `createPath` used for **all** dynamic URLs (required for Shell sync)
-- [ ] Redux navigation slice removed
-- [ ] Navigation types removed from store
-- [ ] Tests updated to use router mocks
-- [ ] `config.dev.js` has `adminRoutes` array
-- [ ] No direct usage of `react-router` APIs
-- [ ] URL parameters replace navigation props
-- [ ] Back/root navigation works correctly
-- [ ] Permission-based routing works
-- [ ] Not-found page renders for invalid routes
-
-## Anti-Patterns to Avoid
-
-❌ **Don't hard-code routes in components:**
-```typescript
-// Bad
-navigateTo('/panel/123');
-
-// Good
-import { buildDetailPath } from 'constants/routes';
-navigateTo(buildDetailPath('123'));
-```
-
-❌ **Don't use react-router directly:**
-```typescript
-// Bad
-import { Link, useNavigate } from 'react-router-dom';
-
-// Good
-import { AdminRouterLink, useAdminNavigate } from '@fivn/admin-ui-base';
-```
-
-❌ **Don't pass navigation props:**
-```typescript
-// Bad
-interface DetailViewProps {
-  itemId: string;
-}
-
-// Good - use URL params
-const DetailView = () => {
-  const { id } = useParams<{ id: string }>();
-};
-```
-
-❌ **Don't skip createPath for dynamic navigation:**
-```typescript
-// Bad - may break Shell sync
-navigateTo(`/panel/${id}?tab=users`);
-
-// Good - ensures Shell synchronization
-navigateTo(createPath({ id, params: { tab: 'users' } }));
-```
-
-❌ **Don't implement custom permission guards:**
-```typescript
-// Bad
-const DetailView = () => {
-  if (!hasPermission('resource.edit')) {
-    return <Restricted />;
-  }
-  return <Content />;
-};
-
-// Good - use route-level permissions
-{
-  path: ROUTES.DETAIL_VIEW,
-  element: <DetailView />,
-  permissions: ['resource.edit'],
-}
-```
+- [ ] `LOCAL_DEV: '/'` route registered
+- [ ] `useAdminRouter` configured with all routes
+- [ ] Declarative `AdminRouterLink` used for all clickable navigation
+- [ ] Imperative `navigateTo` only for form submissions/effects
+- [ ] Path helpers used for dynamic `/<action>/<id>` routes
+- [ ] Redux navigation code removed
+- [ ] All existing navigation flows preserved
+- [ ] Tests updated with router mocks
+- [ ] `config.dev.js` has `adminRoutes` array with correct patterns
+- [ ] Permission-based routing configured
+- [ ] 404 handling with `notFound` prop
 
 ## Success Criteria
 
@@ -694,20 +686,21 @@ A successful migration will:
 ## Troubleshooting
 
 **Navigation not updating URL:**
+
 - Verify `useAdminNavigate` is used, not `useNavigate`
-- Check that routes are defined in `useAdminRouter`
+- Check routes are defined in `useAdminRouter`
 
 **404 errors in production:**
-- Ensure `adminRoutes` in `config.dev.js` matches route paths
-- Verify base path configuration in Shell
 
-**Tests failing:**
-- Update `setupTests.ts` with AdminRouter mocks
-- Use `MemoryRouter` for component tests with routing
-- Mock `useAdminBase` to provide navigation state
+- Ensure `adminRoutes` in `config.dev.js` matches route paths
+- Verify panel is registered in `WebAdminUrlMapping`
 
 **Components not receiving URL params:**
-- Path params (`:id`): Use `useParams()` from react-router
-- Query params: Use `useAdminBase().navigation.search`, NOT `useLocation()`
-- Always wrap `URLSearchParams` in `useMemo` with `navigation?.search` dependency
-- For pathname analysis, use `navigation.pathname.split('/').filter(Boolean)`
+
+- Use `useAdminBase().navigation.search` for query params, not `useLocation()`
+- Wrap `URLSearchParams` in `useMemo` with `navigation?.search` dependency
+
+**Shell not syncing with panel:**
+
+- Verify `createPath()` is used for all navigation
+- Check `initializeAdminBase()` is called before router hooks
